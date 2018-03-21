@@ -35,18 +35,10 @@ def read_data(nrows):
     return prime_train, prime_test
 
 
-def data_transformations(df):
-    '''
-    Categorical cols: Missed values replaced by '', transformed in one-hot.
-    Numerical cols: Missed values replaced by 0, transformed with StandardScaler.
-    :param df: Transformed DataFrame
-    :param categ_cols: lost of categorical columns
-    :param numeric_cols: list of numeric columns
-    :return: df
-    '''
-    print('df.shape:', df.shape)
+def data_for_ED_model(prime_train, prime_test):
+    print('prime_train.shape:', prime_train.shape, 'prime_test.shape:', prime_test.shape)
 
-    cols = df.columns
+    cols = prime_train.columns
     numeric_cols = ['Id', 'LotFrontage', 'LotArea', #  'MSSubClass',  'OverallQual', 'OverallCond',
                     'YearBuilt', 'YearRemodAdd', 'MasVnrArea', 'BsmtFinSF1', 'BsmtFinSF2',
                     'BsmtUnfSF', 'TotalBsmtSF', '1stFlrSF', '2ndFlrSF', 'LowQualFinSF', 'GrLivArea',
@@ -54,52 +46,57 @@ def data_transformations(df):
                     'KitchenAbvGr', 'TotRmsAbvGrd', 'Fireplaces', 'GarageYrBlt', 'GarageCars',
                     'GarageArea', 'WoodDeckSF', 'OpenPorchSF', 'EnclosedPorch', '3SsnPorch', 'ScreenPorch',
                     'PoolArea', 'MiscVal', 'MoSold', 'YrSold'] # , 'SalePrice'
-
     y_cols = ['SalePrice']
-    y = df[y_cols]
+    cat_cols = list(set(cols) - set(numeric_cols) - set(y_cols) )
 
-    df_num = df[numeric_cols]
+    y = prime_train[y_cols]
+    train = prime_train.drop(y_cols, axis=1)
+    train_rows = prime_train.shape[0]
+
+    merged = pd.concat([train, prime_train], axis=0, ignore_index=True)
+
+    df_num = merged[numeric_cols]
     df_num = df_num.fillna(0)
 
     scaler = StandardScaler()
     df_num = scaler.fit_transform(df_num)
-    df_num = pd.DataFrame(df_num, columns=numeric_cols)
-    print('df_num.shape:', df_num.shape)
+    df_num = pd.DataFrame(df_num, columns=numeric_cols) # use DataFrame because we care about column names.
+    print('merged_num.shape:', df_num.shape)
 
-    cat_cols = list(set(cols) - set(numeric_cols) - set(y_cols))
-    df_cat = df[cat_cols]
-    print('df_cat.shape:', df_cat.shape)
-    df_cat = df_cat.fillna('miss').applymap(str)
+    df_cat = merged[cat_cols]
+    print('merged_cat.shape:', df_cat.shape)
+    df_cat = df_cat.fillna('miss').applymap(str) # converts all to str, otherwise the numeric values went wrong.
     df_encoded_cat = pd.get_dummies(df_cat)
-    print('df_encoded_cat.shape:', df_encoded_cat.shape)
+    print('merged_encoded_cat.shape:', df_encoded_cat.shape)
 
     df_transformed = pd.concat([df_num, df_encoded_cat], axis=1)
-    print('df_transformed.shape:', df_transformed.shape)
+    print('merged_transformed.shape:', df_transformed.shape)
 
-    return df_transformed, y
+    x_merged_train, x_merged_dev = train_test_split(df_transformed, test_size=0.2, random_state=42)
 
+    x_test = df_transformed[train_rows:]
+    print('x_merged_train.shape:', x_merged_train.shape, 'x_merged_dev.shape:', x_merged_dev.shape,
+          'x_test.shape:', x_test.shape, 'y.shape:', y.shape, )
+    return x_merged_train, x_merged_dev, x_test, y
 
+# def data_for_ED_model(pred_cols, prime_train, prime_test):
+#     train, _ = data_transformations(prime_train, pred_cols)
+#     test, _ = data_transformations(prime_test, None)
+#     x_merged = pd.concat([train, test], axis=0)
+#
+#     x_train, x_dev = train_test_split(x_merged, test_size=0.2, random_state=42)
+#
+#     x_test = test
+#     # x_test.Depth = x_test.Depth.astype(np.bool).astype(np.float32)  # all other fields are also np.float32
+#     # x_test.drop(['PIDN'], axis=1, inplace=True)
+#     print('shapes: x_train, x_dev, x_test', x_train.shape, x_dev.shape, x_test.shape)
+#     return x_train, x_dev, x_test
 
-
-def data_for_ED_model(pred_cols, prime_train, prime_test):
-    train = prime_train.drop(pred_cols, axis=1)
-    train = pd.concat([train, prime_test])
-    train.Depth = train.Depth.astype(np.bool).astype(np.float32)  # all other fields are also np.float32
-    train.drop(['PIDN'], axis=1, inplace=True)
-    x_train, x_dev = train_test_split(train, test_size=0.2, random_state=42)
-    print(x_train.shape, x_dev.shape)
-    # In[8]:
-    x_test = prime_test
-    x_test.Depth = x_test.Depth.astype(np.bool).astype(np.float32)  # all other fields are also np.float32
-    x_test.drop(['PIDN'], axis=1, inplace=True)
-    print(x_test.shape)
-    return x_train, x_dev, x_test
-
-def mcrmse(y_true, y_pred):
-    return MCRMSE(y_true.columns, y_true, y_pred)
-
-def MCRMSE(columns, y_true, y_pred):
-    return np.mean([mean_squared_error(y_true[col], y_pred[col]) for col in columns])
+# def mcrmse(y_true, y_pred):
+#     return MCRMSE(y_true.columns, y_true, y_pred)
+#
+# def MCRMSE(columns, y_true, y_pred):
+#     return np.mean([mean_squared_error(y_true[col], y_pred[col]) for col in columns])
 
 def create_ED_model(x_train):
     inp_shape = x_train.shape[1]
@@ -142,7 +139,6 @@ def main(development=False, model_file='models/EncoderDecoder.model'):
 
     nrows = 10000 if development else None
     prime_train, prime_test = read_data(nrows)
-
     #print(prime_train.columns)
     # print(DataFrameSummary(prime_train).summary().T)
     # cols = list(prime_train.select_dtypes(include=[np.number]).columns.values)
@@ -151,10 +147,10 @@ def main(development=False, model_file='models/EncoderDecoder.model'):
     # print(len(cat_cols), cat_cols)
     # cat_cols = list(prime_train.select_dtypes(include=[np.object]).columns.values)
     # print(len(cat_cols), cat_cols)
-    df2, y = data_transformations(prime_train)
+
     # pred_cols = ['Ca', 'P', 'pH', 'SOC', 'Sand']  # excluding the 'PIDN' column
-    #
-    # x_train, x_dev, x_test = data_for_ED_model(pred_cols, prime_train, prime_test)
+    x_merged_train, x_merged_dev, x_test, y = data_for_ED_model(prime_train, prime_test)
+
     # ed_model = create_ED_model(x_train)
     # score = train_ED_model(ed_model, x_train, x_dev)
     # ed_model.save(model_file)
