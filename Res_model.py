@@ -19,6 +19,7 @@ import numpy as np
 from sklearn import svm, cross_validation
 from sklearn.model_selection import train_test_split, KFold
 import keras as ks
+from keras.callbacks import EarlyStopping, ModelCheckpoint
 from contextlib import contextmanager
 import time
 from sklearn.metrics import mean_squared_error
@@ -87,7 +88,7 @@ def concat_data(case, layer_outs_dfs, df):
     dfs = [layer_outs_dfs[c] for c in case]
     return pd.concat(dfs + [df], axis=1)
 
-def predict(x_train, x_dev, y_train, y_dev):
+def predict_lightgmb(x_train, x_dev, y_train, y_dev):
     predictions = pd.DataFrame()
     feature_importances = {}
     scores = {}
@@ -95,7 +96,7 @@ def predict(x_train, x_dev, y_train, y_dev):
         'task': 'train',
         'boosting_type': 'gbdt',
         'objective': 'regression',
-        'metric': {'l2', 'auc'},
+        'metric': {'l2'}, # 'auc'},
         'num_leaves': 31,
         'learning_rate': 0.05,
         'feature_fraction': 0.9,
@@ -109,9 +110,9 @@ def predict(x_train, x_dev, y_train, y_dev):
         lgb_eval = lgb.Dataset(x_dev.values, y_dev[col].values, reference=lgb_train)
 
         res_model = lgb.train(params, lgb_train,
-                                num_boost_round=20,
+                                num_boost_round=1000,
                                 valid_sets=lgb_eval,
-                                early_stopping_rounds=5
+                                early_stopping_rounds=20
                               )
 
         res_model.save_model('models/lightgbm_'+col+'.model')
@@ -120,11 +121,40 @@ def predict(x_train, x_dev, y_train, y_dev):
         scores[col] = mean_squared_error(y_dev[col].values, predictions[col])
         print('       rmse =', scores[col])
         feature_importances[col] = res_model.feature_importance()
-    return predictions, scores, feature_importances
+    #return predictions, scores, feature_importances
+    return scores, feature_importances
 
-def calc_scores(layer_outs_dfs, x, y, verbose=True):
+def predict_NN(x_train, x_dev, y_train, y_dev):
+    inp_shape = x_train.shape[1]
+
+    dropout = 0.25
+    inp = ks.Input(shape=(inp_shape,), dtype='float32')
+    out = ks.layers.Dense(128, activation='relu')(inp)
+    out = ks.layers.BatchNormalization()(out)
+    out = ks.layers.Dropout(dropout)(out)
+    out = ks.layers.Dense(32, activation='relu')(out)
+    out = ks.layers.BatchNormalization()(out)
+    out = ks.layers.Dropout(dropout)(out)
+    out = ks.layers.Dense(1)(out)
+
+    model = ks.Model(inp, out)
+    model.compile(loss='mean_squared_error', optimizer=ks.optimizers.Adam(lr=3e-3))
+    model.summary()
+
+    batch_size = 32
+    epochs = 200
+    earlystopper = EarlyStopping(patience=int(epochs / 10), verbose=1)
+    checkpointer = ModelCheckpoint('models/EncoderDecoder.model', verbose=1, save_best_only=True)
+    results = model.fit(x=x_train, y=y_train, batch_size=batch_size, epochs=epochs, verbose=2,
+                        callbacks=[earlystopper, checkpointer])
+    score = model.evaluate(x=x_dev, y=y_dev, batch_size=batch_size)
+    print('Score:', score, 'results.history:', results.history)
+    return score, results
+
+def calc_scores(layer_outs_dfs, x, y, verbose=True, estimator='NN'):
     scores_all = []
-    cases = [None, [2], [5], [8], [2, 5], [5, 8], [2, 8], [2, 5, 8]]
+    add_info = []
+    cases = [None, [0], [1], [2], [3], [4], [5], [6], [7], [8]]
     for case in cases:
         x_conc = concat_data(case, layer_outs_dfs, x)
         if verbose: print('   x_conc.shape, x.shape:', x_conc.shape, x.shape)
@@ -133,11 +163,15 @@ def calc_scores(layer_outs_dfs, x, y, verbose=True):
         if verbose: print('   x_train.shape, x_dev.shape, y_train.shape, y_dev.shape:', x_train.shape, x_dev.shape, y_train.shape,
               y_dev.shape)
 
-        predictions, scores, feature_importances = predict(x_train, x_dev, y_train, y_dev)
-        if verbose: print('   case: scores:', case, scores)  # , feature_importances)
+        if estimator == 'lightgmb':
+            scores, info = predict_lightgmb(x_train, x_dev, y_train, y_dev)
+        elif estimator == 'NN':
+            scores, info = predict_NN(x_train, x_dev, y_train, y_dev)
+        if verbose: print('   Case: Scores:', case, scores, '\n\n')  # , feature_importances)
         scores_all.append((case, scores))
-    if verbose: print(scores_all)
-    return [(score[0], np.mean(list(score[1].values()))) for score in scores_all], scores_all, feature_importances
+        add_info.append((case, info))
+    if verbose: print('   scores_all: add_info:', scores_all, add_info, '\n\n')
+    return scores_all, add_info
 
 def write_data(file_name, vars):
     with open('models/'+file_name+'.json', 'w') as outfile:
@@ -147,7 +181,7 @@ def write_data(file_name, vars):
 #     with open(file_name, 'r') as data_file:
 #         return json.load(data_file)
 
-def main(res_model_name, development=False, ED_model_file='models/EncoderDecoder.model'):
+def main(res_model_name, development=False, ED_model_file='models/EncoderDecoder.model', estimator='NN'):
     nrows = 10000 if development else None
     prime_train, prime_test = ED_model.read_data(nrows)
     x_merged, x_test, y_train = ED_model.data_for_ED_model(prime_train, prime_test)
@@ -156,11 +190,10 @@ def main(res_model_name, development=False, ED_model_file='models/EncoderDecoder
     layer_outs_dfs = get_ED_outputs(ED_model_file, x_train)
     _ = [print(ly.shape) for ly in layer_outs_dfs]
     #x, y = data_for_res_model(prime_train, pred_cols)
-    scores_avg, scores_all, feature_importances = calc_scores(layer_outs_dfs, x_train, y_train)
+    scores_all, add_info = calc_scores(layer_outs_dfs, x_train, y_train, estimator='NN')
 
-    print(scores_avg, scores_all)
-    write_data(res_model_name+'_scores', [scores_avg, scores_all])
-    write_data(res_model_name+'_feature_importances', feature_importances.tolist())
+    write_data(res_model_name+'_scores', scores_all)
+    write_data(res_model_name+'_add_info', add_info)
 
 
 #main('AfricaSoil_01')
