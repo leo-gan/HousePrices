@@ -103,8 +103,14 @@ def create_ED_model(x_train):
 
     inp = ks.Input(shape=(inp_shape,), dtype='float32')
     out = ks.layers.Dense(128, activation='relu')(inp)
+    out = ks.layers.BatchNormalization()(out)
+    out = ks.layers.Dropout(0.2)(out)
     out = ks.layers.Dense(64, activation='relu')(out)
+    out = ks.layers.BatchNormalization()(out)
+    out = ks.layers.Dropout(0.2)(out)
     out = ks.layers.Dense(128, activation='relu')(out)
+    out = ks.layers.BatchNormalization()(out)
+    out = ks.layers.Dropout(0.2)(out)
     out = ks.layers.Dense(inp_shape, activation='relu')(out)
 
     model = ks.Model(inp, out)
@@ -116,7 +122,7 @@ def train_ED_model(model, x_train, x_dev):
     # Development: 0.12119085789122325
     # 0.08965547928152767 : 40 epochs
     batch_size = 32
-    epochs = 30
+    epochs = 100
     for i in range(epochs):
         with timer('epoch {}'.format(i + 1)):
             model.fit(x=x_train, y=x_train, batch_size=batch_size, epochs=1, verbose=0)
@@ -151,8 +157,8 @@ def main(development=False, model_file='models/EncoderDecoder.model'):
     # pred_cols = ['Ca', 'P', 'pH', 'SOC', 'Sand']  # excluding the 'PIDN' column
     x_merged_train, x_merged_dev, x_test, y = data_for_ED_model(prime_train, prime_test)
 
-    # ed_model = create_ED_model(x_train)
-    # score = train_ED_model(ed_model, x_train, x_dev)
-    # ed_model.save(model_file)
+    ed_model = create_ED_model(x_merged_train)
+    score = train_ED_model(ed_model, x_merged_train, x_merged_dev)
+    ed_model.save(model_file)
 
-main(development=True)
+main(development=False)
