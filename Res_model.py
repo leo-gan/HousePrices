@@ -26,64 +26,9 @@ import lightgbm as lgb
 from keras import backend as K
 import json
 
+import ED_model
+
 from pandas_summary import DataFrameSummary
-
-@contextmanager
-def timer(name):
-    t0 = time.time()
-    yield
-    print('[{}] done in {:.0f} s'.format(name, time.time() - t0))
-
-def read_data(nrows):
-    prime_train = pd.read_csv('input/training.csv', nrows=nrows)
-    prime_test = pd.read_csv('input/sorted_test.csv', nrows=nrows)
-    return prime_train, prime_test
-
-def data_for_ED_model(pred_cols, prime_train, prime_test):
-    train = prime_train.drop(pred_cols, axis=1)
-    train = pd.concat([train, prime_test])
-    train.Depth = train.Depth.astype(np.bool).astype(np.float32)  # all other fields are also np.float32
-    train.drop(['PIDN'], axis=1, inplace=True)
-    x_train, x_dev = train_test_split(train, test_size=0.2, random_state=42)
-    print(x_train.shape, x_dev.shape)
-    # In[8]:
-    x_test = prime_test
-    x_test.Depth = x_test.Depth.astype(np.bool).astype(np.float32)  # all other fields are also np.float32
-    x_test.drop(['PIDN'], axis=1, inplace=True)
-    print(x_test.shape)
-    return x_train, x_dev, x_test
-
-def mcrmse(y_true, y_pred):
-    return MCRMSE(y_true.columns, y_true, y_pred)
-
-def MCRMSE(columns, y_true, y_pred):
-    return np.mean([mean_squared_error(y_true[col], y_pred[col]) for col in columns])
-
-def create_ED_model(x_train):
-    inp_shape = x_train.shape[1]
-
-    inp = ks.Input(shape=(inp_shape,), dtype='float32')
-    out = ks.layers.Dense(128, activation='relu')(inp)
-    out = ks.layers.Dense(64, activation='relu')(out)
-    out = ks.layers.Dense(128, activation='relu')(out)
-    out = ks.layers.Dense(inp_shape, activation='relu')(out)
-
-    model = ks.Model(inp, out)
-    model.compile(loss='mean_squared_error', optimizer=ks.optimizers.Adam(lr=3e-3))
-    model.summary()
-    return model
-
-def train_ED_model(model, x_train, x_dev):
-    # Development: 0.12119085789122325
-    # 0.08965547928152767 : 40 epochs
-    batch_size = 32
-    epochs = 30
-    for i in range(epochs):
-        with timer('epoch {}'.format(i + 1)):
-            model.fit(x=x_train, y=x_train, batch_size=batch_size, epochs=1, verbose=0)
-            print(model.evaluate(x=x_dev, y=x_dev, batch_size=batch_size))
-
-    return model.evaluate(x=x_dev, y=x_dev, batch_size=batch_size)
 
 # # Workflow
 # 1. Build the Encoder-Decoder model.
@@ -112,16 +57,15 @@ def get_layer_output(layer_num, layer_outs):
 
 def get_ED_outputs(model_name, x_train):
     ed_model = ks.models.load_model(model_name)
-
     # ed_model_layers_num = len(ed_model.layers) - 1
     # print('ED_model number of layers (-1):', ed_model_layers_num)  # Input layer does not count
     print(ed_model.summary())
 
-    ed_model.layers.pop()
+    ed_model.layers.pop() # not interested in the last layer
     print(ed_model.summary())
 
     features = ed_model.predict(x_train)
-    print('features.shape, features[0]:',  features.shape, features[0])
+    print('features.shape:',  features.shape)
 
     inp = ed_model.input  # input placeholder
     outputs = [layer.output for layer in ed_model.layers]  # all layer outputs
@@ -129,14 +73,14 @@ def get_ED_outputs(model_name, x_train):
     layer_outs = [func([x_train, 1.]) for func in functors]
     return [get_layer_output(l, layer_outs) for l in range(1, len(layer_outs))]
 
-def data_for_res_model(prime_train, pred_cols):
-    y_train = prime_train[pred_cols]
-    x_train = prime_train.drop(pred_cols, axis=1)
-
-    x_train.Depth = x_train.Depth.astype(np.bool).astype(np.float32)  # all other fields are also np.float32
-    x_train.drop(['PIDN'], axis=1, inplace=True)
-    print(x_train.shape, y_train.shape)
-    return x_train, y_train
+# def data_for_res_model(prime_train, pred_cols):
+#     y_train = prime_train[pred_cols]
+#     x_train = prime_train.drop(pred_cols, axis=1)
+#
+#     x_train.Depth = x_train.Depth.astype(np.bool).astype(np.float32)  # all other fields are also np.float32
+#     x_train.drop(['PIDN'], axis=1, inplace=True)
+#     print(x_train.shape, y_train.shape)
+#     return x_train, y_train
 
 def concat_data(case, layer_outs_dfs, df):
     if case == None: return df
@@ -178,9 +122,9 @@ def predict(x_train, x_dev, y_train, y_dev):
         feature_importances[col] = res_model.feature_importance()
     return predictions, scores, feature_importances
 
-def calc_scores(layer_outs_dfs, x, y, verbose=False):
+def calc_scores(layer_outs_dfs, x, y, verbose=True):
     scores_all = []
-    cases = [None, [0], [1], [2], [0, 1], [1, 2], [0, 2], [0, 1, 2]]
+    cases = [None, [2], [5], [8], [2, 5], [5, 8], [2, 8], [2, 5, 8]]
     for case in cases:
         x_conc = concat_data(case, layer_outs_dfs, x)
         if verbose: print('   x_conc.shape, x.shape:', x_conc.shape, x.shape)
@@ -195,28 +139,28 @@ def calc_scores(layer_outs_dfs, x, y, verbose=False):
     if verbose: print(scores_all)
     return [(score[0], np.mean(list(score[1].values()))) for score in scores_all], scores_all, feature_importances
 
-def main(res_model_name, development=False, ED_model_file='models/EncoderDecoder.model'):
-    nrows = 10000 if development else None
-    prime_train, prime_test = read_data(nrows)
-    pred_cols = ['Ca', 'P', 'pH', 'SOC', 'Sand']  # excluding the 'PIDN' column
-
-    x_train, x_dev, x_test = data_for_ED_model(pred_cols, prime_train, prime_test)
-
-    layer_outs_dfs = get_ED_outputs(ED_model_file, x_train)
-    x, y = data_for_res_model(prime_train, pred_cols)
-    scores_avg, scores_all, feature_importances = calc_scores(layer_outs_dfs, x, y)
-
-    print(scores_avg, scores_all)
-    write_data(res_model_name+'_scores', [scores_avg, scores_all])
-    write_data(res_model_name+'_feature_importances', feature_importances)
-
 def write_data(file_name, vars):
     with open('models/'+file_name+'.json', 'w') as outfile:
         json.dump(vars, outfile)
 
-def read_data(file_name):
-    with open(file_name, 'r') as data_file:
-        return json.load(data_file)
+# def read_data(file_name):
+#     with open(file_name, 'r') as data_file:
+#         return json.load(data_file)
+
+def main(res_model_name, development=False, ED_model_file='models/EncoderDecoder.model'):
+    nrows = 10000 if development else None
+    prime_train, prime_test = ED_model.read_data(nrows)
+    x_merged, x_test, y_train = ED_model.data_for_ED_model(prime_train, prime_test)
+    x_train = x_merged[:x_test.shape[0]]
+
+    layer_outs_dfs = get_ED_outputs(ED_model_file, x_train)
+    _ = [print(ly.shape) for ly in layer_outs_dfs]
+    #x, y = data_for_res_model(prime_train, pred_cols)
+    scores_avg, scores_all, feature_importances = calc_scores(layer_outs_dfs, x_train, y_train)
+
+    print(scores_avg, scores_all)
+    write_data(res_model_name+'_scores', [scores_avg, scores_all])
+    write_data(res_model_name+'_feature_importances', feature_importances.tolist())
 
 
 #main('AfricaSoil_01')
@@ -259,3 +203,5 @@ def read_data(file_name):
 # ([0, 1, 2], {'Ca': 0.93336638177564357, 'P': 0.52471195652507341, 'pH': 0.36410788132614141, 'SOC': 0.99864542927838662, 'Sand': 0.27294893776700635})]
 # scores_avg = [(score[0], np.mean(list(score[1].values()))) for score in scores_all]
 # print(scores_avg)
+if __name__ == "__main__":
+    main('Res_model', development=True)

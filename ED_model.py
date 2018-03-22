@@ -16,6 +16,8 @@ import numpy as np
 from sklearn import svm, cross_validation
 from sklearn.model_selection import train_test_split, KFold
 import keras as ks
+from keras.callbacks import EarlyStopping, ModelCheckpoint
+
 from contextlib import contextmanager
 import time
 from sklearn.metrics import mean_squared_error
@@ -72,12 +74,11 @@ def data_for_ED_model(prime_train, prime_test):
     df_transformed = pd.concat([df_num, df_encoded_cat], axis=1)
     print('merged_transformed.shape:', df_transformed.shape)
 
-    x_merged_train, x_merged_dev = train_test_split(df_transformed, test_size=0.2, random_state=42)
+    x_merged = df_transformed
 
     x_test = df_transformed[train_rows:]
-    print('x_merged_train.shape:', x_merged_train.shape, 'x_merged_dev.shape:', x_merged_dev.shape,
-          'x_test.shape:', x_test.shape, 'y.shape:', y.shape, )
-    return x_merged_train, x_merged_dev, x_test, y
+    print('x_merged.shape:', x_merged.shape, 'x_test.shape:', x_test.shape, 'y.shape:', y.shape, )
+    return x_merged, x_test, y
 
 # def data_for_ED_model(pred_cols, prime_train, prime_test):
 #     train, _ = data_transformations(prime_train, pred_cols)
@@ -101,16 +102,17 @@ def data_for_ED_model(prime_train, prime_test):
 def create_ED_model(x_train):
     inp_shape = x_train.shape[1]
 
+    dropout = 0.25
     inp = ks.Input(shape=(inp_shape,), dtype='float32')
     out = ks.layers.Dense(128, activation='relu')(inp)
     out = ks.layers.BatchNormalization()(out)
-    out = ks.layers.Dropout(0.2)(out)
+    out = ks.layers.Dropout(dropout)(out)
     out = ks.layers.Dense(64, activation='relu')(out)
     out = ks.layers.BatchNormalization()(out)
-    out = ks.layers.Dropout(0.2)(out)
+    out = ks.layers.Dropout(dropout)(out)
     out = ks.layers.Dense(128, activation='relu')(out)
     out = ks.layers.BatchNormalization()(out)
-    out = ks.layers.Dropout(0.2)(out)
+    out = ks.layers.Dropout(dropout)(out)
     out = ks.layers.Dense(inp_shape, activation='relu')(out)
 
     model = ks.Model(inp, out)
@@ -118,47 +120,33 @@ def create_ED_model(x_train):
     model.summary()
     return model
 
-def train_ED_model(model, x_train, x_dev):
+def train_ED_model(model, x_train):
     # Development: 0.12119085789122325
     # 0.08965547928152767 : 40 epochs
     batch_size = 32
-    epochs = 100
-    for i in range(epochs):
-        with timer('epoch {}'.format(i + 1)):
-            model.fit(x=x_train, y=x_train, batch_size=batch_size, epochs=1, verbose=0)
-            print(model.evaluate(x=x_dev, y=x_dev, batch_size=batch_size))
+    epochs = 200
 
-    return model.evaluate(x=x_dev, y=x_dev, batch_size=batch_size)
+    earlystopper = EarlyStopping(patience=int(epochs/10), verbose=1)
+    checkpointer = ModelCheckpoint('models/EncoderDecoder.model', verbose=1, save_best_only=True)
+    results = model.fit(x=x_train, y=x_train, validation_split=0.2, batch_size=batch_size, epochs=epochs, verbose=2,
+                        callbacks=[earlystopper, checkpointer])
+    # for i in range(epochs):
+    #     with timer('epoch {}'.format(i + 1)):
+    #         model.fit(x=x_train, y=x_train, batch_size=batch_size, epochs=1, verbose=0)
+    #         print(model.evaluate(x=x_dev, y=x_dev, batch_size=batch_size))
+    print('results.history:', results.history)
+    # score = model.evaluate(x=x_dev, y=x_dev, batch_size=batch_size)
+    # print('score:', score)
+    return model
 
 def main(development=False, model_file='models/EncoderDecoder.model'):
-    # # Workflow
-    # 1. Build the Encoder-Decoder model.
-    # 2. Train it.
-    # 3. Get the trained Encoder part of the model
-    # 4. Use it to generate the additional features for the next model
-    #
-    # That means on 1. we don't need the predicted values at all. We can use both, train and test data to train the
-    # Encoder-Decoder.
-
-    # ## Prepare Data
-    # We can use both, train and test data to train the Encoder-Decoder. There is no label data, becuse all input data acts as the label data.
-
     nrows = 10000 if development else None
     prime_train, prime_test = read_data(nrows)
-    #print(prime_train.columns)
-    # print(DataFrameSummary(prime_train).summary().T)
-    # cols = list(prime_train.select_dtypes(include=[np.number]).columns.values)
-    # print(len(cols), cols)
-    # cat_cols = list(prime_train.select_dtypes(include=[np.object]).columns.values)
-    # print(len(cat_cols), cat_cols)
-    # cat_cols = list(prime_train.select_dtypes(include=[np.object]).columns.values)
-    # print(len(cat_cols), cat_cols)
+    x_merged, x_test, y = data_for_ED_model(prime_train, prime_test)
 
-    # pred_cols = ['Ca', 'P', 'pH', 'SOC', 'Sand']  # excluding the 'PIDN' column
-    x_merged_train, x_merged_dev, x_test, y = data_for_ED_model(prime_train, prime_test)
-
-    ed_model = create_ED_model(x_merged_train)
-    score = train_ED_model(ed_model, x_merged_train, x_merged_dev)
+    ed_model = create_ED_model(x_merged)
+    ed_model = train_ED_model(ed_model, x_merged)
     ed_model.save(model_file)
 
-main(development=False)
+if __name__ == "__main__":
+    main(development=False)
